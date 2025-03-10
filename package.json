@@ -1,7 +1,7 @@
 {
-  "name": "discord-mcp-server",
+  "name": "mcp-discord",
   "version": "1.0.0",
-  "description": "Discord MCP server for integrating Discord with Claude",
+  "description": "Discord MCP server for integrating Discord with LLMs",
   "type": "module",
   "main": "build/index.js",
   "scripts": {

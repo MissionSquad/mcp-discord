@@ -5,23 +5,94 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { Client, GatewayIntentBits, TextChannel } from 'discord.js';
+import { Client, GatewayIntentBits, TextChannel, ClientOptions } from 'discord.js';
 import { z } from 'zod';
 
 // Load environment variables
 dotenv.config();
 
-// Discord client setup
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-});
+// Discord client manager to handle multiple clients
+class DiscordClientManager {
+  private clients: Map<string, { client: Client; lastUsed: number }> = new Map();
+  private readonly cleanupInterval = 30 * 60 * 1000; // 30 minutes
+  private readonly clientOptions: ClientOptions = {
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+    ],
+  };
+
+  constructor() {
+    // Start cleanup timer
+    setInterval(() => this.cleanupInactiveClients(), this.cleanupInterval);
+  }
+
+  /**
+   * Get or create a Discord client for the given token
+   */
+  public async getClient(token: string): Promise<Client> {
+    // Check if we already have a client for this token
+    const existingClient = this.clients.get(token);
+    if (existingClient) {
+      // Update last used timestamp
+      existingClient.lastUsed = Date.now();
+      return existingClient.client;
+    }
+
+    // Create a new client
+    const client = new Client(this.clientOptions);
+    
+    try {
+      // Login with the provided token
+      await client.login(token);
+      
+      // Store the client in our map
+      this.clients.set(token, {
+        client,
+        lastUsed: Date.now(),
+      });
+      
+      return client;
+    } catch (error) {
+      // Clean up the client if login fails
+      client.destroy();
+      throw new Error(`Failed to login with the provided Discord token: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Clean up inactive clients to free resources
+   */
+  private cleanupInactiveClients(): void {
+    const now = Date.now();
+    
+    for (const [token, { client, lastUsed }] of this.clients.entries()) {
+      // If client hasn't been used in the cleanup interval, destroy it
+      if (now - lastUsed > this.cleanupInterval) {
+        client.destroy();
+        this.clients.delete(token);
+        console.error(`Cleaned up inactive Discord client for token ending with ...${token.slice(-5)}`);
+      }
+    }
+  }
+
+  /**
+   * Destroy all clients and clear the cache
+   */
+  public destroyAll(): void {
+    for (const [token, { client }] of this.clients.entries()) {
+      client.destroy();
+      this.clients.delete(token);
+    }
+  }
+}
+
+// Create a single instance of the client manager
+const clientManager = new DiscordClientManager();
 
 // Helper function to find a guild by name or ID
-async function findGuild(guildIdentifier?: string) {
+async function findGuild(client: Client, guildIdentifier?: string) {
   if (!guildIdentifier) {
     // If no guild specified and bot is only in one guild, use that
     if (client.guilds.cache.size === 1) {
@@ -58,8 +129,8 @@ async function findGuild(guildIdentifier?: string) {
 }
 
 // Helper function to find a channel by name or ID within a specific guild
-async function findChannel(channelIdentifier: string, guildIdentifier?: string): Promise<TextChannel> {
-  const guild = await findGuild(guildIdentifier);
+async function findChannel(client: Client, channelIdentifier: string, guildIdentifier?: string): Promise<TextChannel> {
+  const guild = await findGuild(client, guildIdentifier);
   
   // First try to fetch by ID
   try {
@@ -93,12 +164,14 @@ async function findChannel(channelIdentifier: string, guildIdentifier?: string):
 
 // Updated validation schemas
 const SendMessageSchema = z.object({
+  token: z.string().describe('Discord bot token'),
   server: z.string().optional().describe('Server name or ID (optional if bot is only in one server)'),
   channel: z.string().describe('Channel name (e.g., "general") or ID'),
   message: z.string(),
 });
 
 const ReadMessagesSchema = z.object({
+  token: z.string().describe('Discord bot token'),
   server: z.string().optional().describe('Server name or ID (optional if bot is only in one server)'),
   channel: z.string().describe('Channel name (e.g., "general") or ID'),
   limit: z.number().min(1).max(100).default(50),
@@ -127,6 +200,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
+            token: {
+              type: "string",
+              description: "Discord bot token",
+            },
             server: {
               type: "string",
               description: 'Server name or ID (optional if bot is only in one server)',
@@ -140,7 +217,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: "Message content to send",
             },
           },
-          required: ["channel", "message"],
+          required: ["token", "channel", "message"],
         },
       },
       {
@@ -149,6 +226,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
+            token: {
+              type: "string",
+              description: "Discord bot token",
+            },
             server: {
               type: "string",
               description: 'Server name or ID (optional if bot is only in one server)',
@@ -163,7 +244,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               default: 50,
             },
           },
-          required: ["channel"],
+          required: ["token", "channel"],
         },
       },
     ],
@@ -177,8 +258,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "send-message": {
-        const { channel: channelIdentifier, message } = SendMessageSchema.parse(args);
-        const channel = await findChannel(channelIdentifier);
+        const { token, server: serverIdentifier, channel: channelIdentifier, message } = SendMessageSchema.parse(args);
+        
+        // Get or create a client for this token
+        const client = await clientManager.getClient(token);
+        
+        // Find the channel
+        const channel = await findChannel(client, channelIdentifier, serverIdentifier);
         
         const sent = await channel.send(message);
         return {
@@ -190,8 +276,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "read-messages": {
-        const { channel: channelIdentifier, limit } = ReadMessagesSchema.parse(args);
-        const channel = await findChannel(channelIdentifier);
+        const { token, server: serverIdentifier, channel: channelIdentifier, limit } = ReadMessagesSchema.parse(args);
+        
+        // Get or create a client for this token
+        const client = await clientManager.getClient(token);
+        
+        // Find the channel
+        const channel = await findChannel(client, channelIdentifier, serverIdentifier);
         
         const messages = await channel.messages.fetch({ limit });
         const formattedMessages = Array.from(messages.values()).map(msg => ({
@@ -225,27 +316,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Discord client login and error handling
-client.once('ready', () => {
-  console.error('Discord bot is ready!');
-});
-
 // Start the server
 async function main() {
-  // Check for Discord token
-  const token = process.env.DISCORD_TOKEN;
-  if (!token) {
-    throw new Error('DISCORD_TOKEN environment variable is not set');
-  }
-  
   try {
-    // Login to Discord
-    await client.login(token);
-
     // Start MCP server
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error("Discord MCP Server running on stdio");
+    
+    // Set up cleanup on exit
+    process.on('SIGINT', async () => {
+      clientManager.destroyAll();
+      await server.close();
+      process.exit(0);
+    });
+    
+    process.on('SIGTERM', async () => {
+      clientManager.destroyAll();
+      await server.close();
+      process.exit(0);
+    });
+    
   } catch (error) {
     console.error("Fatal error in main():", error);
     process.exit(1);
