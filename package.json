@@ -1,6 +1,6 @@
 {
   "name": "@missionsquad/mcp-discord",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Discord MCP server for integrating Discord with LLMs",
   "type": "module",
   "main": "dist/index.js",
