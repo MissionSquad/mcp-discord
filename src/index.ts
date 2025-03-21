@@ -83,7 +83,7 @@ const server = new FastMCP({
 
 // Add tools using FastMCP's addTool method
 server.addTool({
-  name: "send-message",
+  name: "send_message",
   description: "Send a message to a Discord channel",
   parameters: SendMessageSchema,
   execute: async (args) => {
@@ -113,7 +113,7 @@ server.addTool({
 })
 
 server.addTool({
-  name: "read-messages",
+  name: "read_messages",
   description: "Read recent messages from a Discord channel",
   parameters: ReadMessagesSchema,
   execute: async (args) => {
@@ -151,7 +151,7 @@ server.addTool({
 })
 
 server.addTool({
-  name: "register-commands",
+  name: "register_commands",
   description: "Register slash commands for a Discord bot",
   parameters: RegisterCommandsSchema,
   execute: async (args) => {
@@ -209,7 +209,7 @@ server.addTool({
 
 // New tools for message listeners
 server.addTool({
-  name: "create-listener",
+  name: "create_listener",
   description: "Create a new message listener with keywords and a predefined response handler",
   parameters: CreateListenerSchema,
   execute: async (args) => {
@@ -264,7 +264,7 @@ server.addTool({
 })
 
 server.addTool({
-  name: "remove-listener",
+  name: "remove_listener",
   description: "Remove an existing message listener",
   parameters: RemoveListenerSchema,
   execute: async (args) => {
@@ -285,7 +285,7 @@ server.addTool({
 })
 
 server.addTool({
-  name: "list-listeners",
+  name: "list_listeners",
   description: "List all active message listeners",
   parameters: ListListenersSchema,
   execute: async (args) => {
@@ -302,7 +302,7 @@ server.addTool({
 })
 
 server.addTool({
-  name: "list-handlers",
+  name: "list_handlers",
   description: "List all available response handlers",
   parameters: ListHandlersSchema,
   execute: async () => {
