@@ -1,500 +1,25 @@
 #!/usr/bin/env node
 
 import { FastMCP, UserError } from "fastmcp"
-import dotenv from 'dotenv'
 import { 
   Client, 
-  GatewayIntentBits, 
   TextChannel, 
-  ClientOptions, 
-  Interaction, 
   ChatInputCommandInteraction,
   ApplicationCommandOptionType,
   GuildMember,
   PermissionFlagsBits,
   Collection,
-  ApplicationCommandData
+  ApplicationCommandData,
+  Interaction
 } from 'discord.js'
 import { z } from 'zod'
-
-// Load environment variables
-dotenv.config()
-
-// Discord client manager to handle multiple clients
-class DiscordClientManager {
-  private clients: Map<string, { client: Client; lastUsed: number }> = new Map()
-  private readonly cleanupInterval = 30 * 60 * 1000 // 30 minutes
-  private readonly clientOptions: ClientOptions = {
-    intents: [
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildMessages,
-      GatewayIntentBits.MessageContent,
-      GatewayIntentBits.GuildModeration,
-    ],
-  }
-
-  constructor() {
-    // Start cleanup timer
-    setInterval(() => this.cleanupInactiveClients(), this.cleanupInterval)
-  }
-
-  /**
-   * Get or create a Discord client for the given token
-   */
-  public async getClient(token: string): Promise<Client> {
-    // Check if we already have a client for this token
-    const existingClient = this.clients.get(token)
-    if (existingClient) {
-      // Update last used timestamp
-      existingClient.lastUsed = Date.now()
-      return existingClient.client
-    }
-
-    // Create a new client
-    const client = new Client(this.clientOptions)
-    
-    try {
-      // Login with the provided token
-      await client.login(token)
-      
-      // Set up interaction handlers
-      this.setupInteractionHandlers(client)
-      
-      // Store the client in our map
-      this.clients.set(token, {
-        client,
-        lastUsed: Date.now(),
-      })
-      
-      return client
-    } catch (error) {
-      // Clean up the client if login fails
-      client.destroy()
-      throw new Error(`Failed to login with the provided Discord token: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-
-  /**
-   * Clean up inactive clients to free resources
-   */
-  private cleanupInactiveClients(): void {
-    const now = Date.now()
-    
-    for (const [token, { client, lastUsed }] of this.clients.entries()) {
-      // If client hasn't been used in the cleanup interval, destroy it
-      if (now - lastUsed > this.cleanupInterval) {
-        client.destroy()
-        this.clients.delete(token)
-        console.error(`Cleaned up inactive Discord client for token ending with ...${token.slice(-5)}`)
-      }
-    }
-  }
-
-  /**
-   * Destroy all clients and clear the cache
-   */
-  public destroyAll(): void {
-    for (const [token, { client }] of this.clients.entries()) {
-      client.destroy()
-      this.clients.delete(token)
-    }
-  }
-
-  /**
-   * Register slash commands for a Discord bot
-   */
-  public async registerCommands(token: string, guildId?: string): Promise<Collection<string, any>> {
-    const client = await this.getClient(token)
-    
-    // Wait for client to be ready
-    if (!client.isReady()) {
-      await new Promise<void>((resolve) => {
-        const readyListener = () => {
-          resolve()
-          client.removeListener('ready', readyListener)
-        }
-        client.on('ready', readyListener)
-        
-        // If client is already ready, resolve immediately
-        if (client.isReady()) {
-          resolve()
-        }
-      })
-    }
-    
-    // Define commands
-    const commands: ApplicationCommandData[] = [
-      {
-        name: 'ping',
-        description: 'Replies with Pong!'
-      },
-      {
-        name: 'kick',
-        description: 'Kick a user from the server',
-        options: [
-          {
-            name: 'target',
-            description: 'The user to kick',
-            type: ApplicationCommandOptionType.User,
-            required: true
-          },
-          {
-            name: 'reason',
-            description: 'Reason for kicking',
-            type: ApplicationCommandOptionType.String,
-            required: false
-          }
-        ]
-      },
-      {
-        name: 'ban',
-        description: 'Ban a user from the server',
-        options: [
-          {
-            name: 'target',
-            description: 'The user to ban',
-            type: ApplicationCommandOptionType.User,
-            required: true
-          },
-          {
-            name: 'reason',
-            description: 'Reason for banning',
-            type: ApplicationCommandOptionType.String,
-            required: false
-          }
-        ]
-      },
-      {
-        name: 'slowmode',
-        description: 'Set slowmode for the current channel',
-        options: [
-          {
-            name: 'seconds',
-            description: 'Slowmode delay in seconds (0 to disable)',
-            type: ApplicationCommandOptionType.Integer,
-            required: true,
-            min_value: 0,
-            max_value: 21600 // 6 hours
-          }
-        ]
-      }
-    ]
-
-    // Register commands to a specific guild or globally
-    if (guildId) {
-      const guild = await client.guilds.fetch(guildId)
-      return await guild.commands.set(commands)
-    } else {
-      if (!client.application) {
-        throw new Error('Client application is not available')
-      }
-      return await client.application.commands.set(commands)
-    }
-  }
-
-  /**
-   * Set up interaction handlers for a Discord client
-   */
-  private setupInteractionHandlers(client: Client): void {
-    client.on('interactionCreate', async (interaction: Interaction) => {
-      if (!interaction.isChatInputCommand()) return
-      
-      try {
-        await this.handleCommand(interaction)
-      } catch (error) {
-        console.error('Error handling command:', error)
-        
-        // Only reply if the interaction hasn't been replied to yet
-        if (interaction.replied || interaction.deferred) {
-          await interaction.followUp({ 
-            content: 'An error occurred while executing this command.', 
-            ephemeral: true 
-          }).catch(console.error)
-        } else {
-          await interaction.reply({ 
-            content: 'An error occurred while executing this command.', 
-            ephemeral: true 
-          }).catch(console.error)
-        }
-      }
-    })
-  }
-
-  /**
-   * Handle a command interaction
-   */
-  private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-    const { commandName } = interaction
-
-    switch (commandName) {
-      case 'ping':
-        await this.handlePing(interaction)
-        break
-      case 'kick':
-        await this.handleKick(interaction)
-        break
-      case 'ban':
-        await this.handleBan(interaction)
-        break
-      case 'slowmode':
-        await this.handleSlowmode(interaction)
-        break
-      default:
-        await interaction.reply({ 
-          content: 'Unknown command', 
-          ephemeral: true 
-        })
-    }
-  }
-
-  /**
-   * Handle the ping command
-   */
-  private async handlePing(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.reply('Pong!')
-  }
-
-  /**
-   * Handle the kick command
-   */
-  private async handleKick(interaction: ChatInputCommandInteraction): Promise<void> {
-    // Only run in a guild
-    if (!interaction.guild) {
-      await interaction.reply({ 
-        content: 'This command can only be used in a server.', 
-        ephemeral: true 
-      })
-      return
-    }
-
-    // Check if the user has permission to kick
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.KickMembers)) {
-      await interaction.reply({ 
-        content: 'You do not have permission to kick users.', 
-        ephemeral: true 
-      })
-      return
-    }
-
-    const targetUser = interaction.options.getUser('target')
-    if (!targetUser) {
-      await interaction.reply({ 
-        content: 'Invalid user.', 
-        ephemeral: true 
-      })
-      return
-    }
-
-    const targetMember = interaction.options.getMember('target') as GuildMember | null
-    if (!targetMember) {
-      await interaction.reply({ 
-        content: 'User is not in this server.', 
-        ephemeral: true 
-      })
-      return
-    }
-
-    // Check if the bot can kick the user
-    if (!targetMember.kickable) {
-      await interaction.reply({ 
-        content: 'I do not have permission to kick this user.', 
-        ephemeral: true 
-      })
-      return
-    }
-
-    const reason = interaction.options.getString('reason') || 'No reason provided'
-
-    try {
-      await targetMember.kick(reason)
-      await interaction.reply(`Successfully kicked ${targetUser.tag} for reason: ${reason}`)
-    } catch (error) {
-      console.error('Error kicking user:', error)
-      await interaction.reply({ 
-        content: 'Failed to kick user. Please check my permissions and try again.', 
-        ephemeral: true 
-      })
-    }
-  }
-
-  /**
-   * Handle the ban command
-   */
-  private async handleBan(interaction: ChatInputCommandInteraction): Promise<void> {
-    // Only run in a guild
-    if (!interaction.guild) {
-      await interaction.reply({ 
-        content: 'This command can only be used in a server.', 
-        ephemeral: true 
-      })
-      return
-    }
-
-    // Check if the user has permission to ban
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.BanMembers)) {
-      await interaction.reply({ 
-        content: 'You do not have permission to ban users.', 
-        ephemeral: true 
-      })
-      return
-    }
-
-    const targetUser = interaction.options.getUser('target')
-    if (!targetUser) {
-      await interaction.reply({ 
-        content: 'Invalid user.', 
-        ephemeral: true 
-      })
-      return
-    }
-
-    const targetMember = interaction.options.getMember('target') as GuildMember | null
-    if (targetMember && !targetMember.bannable) {
-      await interaction.reply({ 
-        content: 'I do not have permission to ban this user.', 
-        ephemeral: true 
-      })
-      return
-    }
-
-    const reason = interaction.options.getString('reason') || 'No reason provided'
-
-    try {
-      await interaction.guild.members.ban(targetUser, { reason })
-      await interaction.reply(`Successfully banned ${targetUser.tag} for reason: ${reason}`)
-    } catch (error) {
-      console.error('Error banning user:', error)
-      await interaction.reply({ 
-        content: 'Failed to ban user. Please check my permissions and try again.', 
-        ephemeral: true 
-      })
-    }
-  }
-
-  /**
-   * Handle the slowmode command
-   */
-  private async handleSlowmode(interaction: ChatInputCommandInteraction): Promise<void> {
-    // Only run in a guild
-    if (!interaction.guild) {
-      await interaction.reply({ 
-        content: 'This command can only be used in a server.', 
-        ephemeral: true 
-      })
-      return
-    }
-
-    // Check if the user has permission to manage channels
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
-      await interaction.reply({ 
-        content: 'You do not have permission to manage channels.', 
-        ephemeral: true 
-      })
-      return
-    }
-
-    // Check if the channel is a text channel
-    if (!interaction.channel || !('setRateLimitPerUser' in interaction.channel)) {
-      await interaction.reply({ 
-        content: 'This command can only be used in a text channel.', 
-        ephemeral: true 
-      })
-      return
-    }
-
-    const seconds = interaction.options.getInteger('seconds', true)
-    
-    try {
-      await interaction.channel.setRateLimitPerUser(seconds, 'Slowmode set via slash command')
-      
-      if (seconds === 0) {
-        await interaction.reply('Slowmode has been disabled for this channel.')
-      } else {
-        await interaction.reply(`Slowmode has been set to ${seconds} second(s) for this channel.`)
-      }
-    } catch (error) {
-      console.error('Error setting slowmode:', error)
-      await interaction.reply({ 
-        content: 'Failed to set slowmode. Please check my permissions and try again.', 
-        ephemeral: true 
-      })
-    }
-  }
-}
-
-// Create a single instance of the client manager
-const clientManager = new DiscordClientManager()
-
-// Helper function to find a guild by name or ID
-async function findGuild(client: Client, guildIdentifier?: string) {
-  if (!guildIdentifier) {
-    // If no guild specified and bot is only in one guild, use that
-    if (client.guilds.cache.size === 1) {
-      return client.guilds.cache.first()!
-    }
-    // List available guilds
-    const guildList = Array.from(client.guilds.cache.values())
-      .map(g => `"${g.name}"`).join(', ')
-    throw new Error(`Bot is in multiple servers. Please specify server name or ID. Available servers: ${guildList}`)
-  }
-
-  // Try to fetch by ID first
-  try {
-    const guild = await client.guilds.fetch(guildIdentifier)
-    if (guild) return guild
-  } catch {
-    // If ID fetch fails, search by name
-    const guilds = client.guilds.cache.filter(
-      g => g.name.toLowerCase() === guildIdentifier.toLowerCase()
-    )
-    
-    if (guilds.size === 0) {
-      const availableGuilds = Array.from(client.guilds.cache.values())
-        .map(g => `"${g.name}"`).join(', ')
-      throw new Error(`Server "${guildIdentifier}" not found. Available servers: ${availableGuilds}`)
-    }
-    if (guilds.size > 1) {
-      const guildList = guilds.map(g => `${g.name} (ID: ${g.id})`).join(', ')
-      throw new Error(`Multiple servers found with name "${guildIdentifier}": ${guildList}. Please specify the server ID.`)
-    }
-    return guilds.first()!
-  }
-  throw new Error(`Server "${guildIdentifier}" not found`)
-}
-
-// Helper function to find a channel by name or ID within a specific guild
-async function findChannel(client: Client, channelIdentifier: string, guildIdentifier?: string): Promise<TextChannel> {
-  const guild = await findGuild(client, guildIdentifier)
-  
-  // First try to fetch by ID
-  try {
-    const channel = await client.channels.fetch(channelIdentifier)
-    if (channel instanceof TextChannel && channel.guild.id === guild.id) {
-      return channel
-    }
-  } catch {
-    // If fetching by ID fails, search by name in the specified guild
-    const channels = guild.channels.cache.filter(
-      (channel): channel is TextChannel =>
-        channel instanceof TextChannel &&
-        (channel.name.toLowerCase() === channelIdentifier.toLowerCase() ||
-         channel.name.toLowerCase() === channelIdentifier.toLowerCase().replace('#', ''))
-    )
-
-    if (channels.size === 0) {
-      const availableChannels = guild.channels.cache
-        .filter((c): c is TextChannel => c instanceof TextChannel)
-        .map(c => `"#${c.name}"`).join(', ')
-      throw new Error(`Channel "${channelIdentifier}" not found in server "${guild.name}". Available channels: ${availableChannels}`)
-    }
-    if (channels.size > 1) {
-      const channelList = channels.map(c => `#${c.name} (${c.id})`).join(', ')
-      throw new Error(`Multiple channels found with name "${channelIdentifier}" in server "${guild.name}": ${channelList}. Please specify the channel ID.`)
-    }
-    return channels.first()!
-  }
-  throw new Error(`Channel "${channelIdentifier}" is not a text channel or not found in server "${guild.name}"`)
-}
+import { discordClientManager } from './discord-client-manager.js'
+import { responseHandlerRegistry } from './response-handlers/index.js'
+import { commands } from "./slash-commands/commands.js"
+import { tokenErrorMessage } from "./shared.js"
+import { setupSlashCommandInteractionHandlers } from "./slash-commands/handlers.js"
+import { config } from './config.js'
+import { logger } from './logger.js'
 
 // Validation schemas
 const SendMessageSchema = z.object({
@@ -525,13 +50,36 @@ const _RegisterCommandsSchema = RegisterCommandsSchema.extend({
   token: z.string().optional().describe('Discord bot token'),
 })
 
+const CreateListenerSchema = z.object({
+  server: z.string().optional().describe('Server name or ID (optional)'),
+  channel: z.string().optional().describe('Channel name or ID (optional)'),
+  keywords: z.array(z.string()).describe('Keywords to listen for'),
+  handlerId: z.string().describe('ID of the response handler to use'),
+  handlerOptions: z.any().optional().describe('Options for the response handler'),
+  description: z.string().optional().describe('Description of this listener'),
+})
+
+const _CreateListenerSchema = CreateListenerSchema.extend({
+  token: z.string().optional().describe('Discord bot token'),
+})
+
+const RemoveListenerSchema = z.object({
+  listenerId: z.string().describe('ID of the listener to remove'),
+})
+
+const ListListenersSchema = z.object({})
+
+const _ListListenersSchema = ListListenersSchema.extend({
+  token: z.string().optional().describe('Discord bot token'),
+})
+
+const ListHandlersSchema = z.object({})
+
 // Create FastMCP server instance
 const server = new FastMCP({
   name: "discord",
   version: "1.0.0",
 })
-
-const tokenErrorMessage = 'No token provided and DISCORD_TOKEN environment variable is not set'
 
 // Add tools using FastMCP's addTool method
 server.addTool({
@@ -544,17 +92,17 @@ server.addTool({
 
       let { token } = args as z.infer<typeof _SendMessageSchema>
       if (!token) {
-        token = process.env.DISCORD_TOKEN
+        token = config.discordToken
         if (!token) {
           throw new UserError(tokenErrorMessage)
         }
       }
       
       // Get or create a client for this token
-      const client = await clientManager.getClient(token)
+      const client = await discordClientManager.getClient(token)
       
       // Find the channel
-      const channel = await findChannel(client, channelIdentifier, serverIdentifier)
+      const channel = await discordClientManager.findChannel(client, channelIdentifier, serverIdentifier)
       
       const sent = await channel.send(message)
       return `Message sent successfully to #${channel.name} in ${channel.guild.name}. Message ID: ${sent.id}`
@@ -574,17 +122,17 @@ server.addTool({
 
       let { token } = args as z.infer<typeof _ReadMessagesSchema>
       if (!token) {
-        token = process.env.DISCORD_TOKEN
+        token = config.discordToken
         if (!token) {
           throw new UserError(tokenErrorMessage)
         }
       }
       
       // Get or create a client for this token
-      const client = await clientManager.getClient(token)
+      const client = await discordClientManager.getClient(token)
       
       // Find the channel
-      const channel = await findChannel(client, channelIdentifier, serverIdentifier)
+      const channel = await discordClientManager.findChannel(client, channelIdentifier, serverIdentifier)
       
       const messages = await channel.messages.fetch({ limit })
       const formattedMessages = Array.from(messages.values()).map(msg => ({
@@ -612,39 +160,211 @@ server.addTool({
 
       let { token } = args as z.infer<typeof _RegisterCommandsSchema>
       if (!token) {
-        token = process.env.DISCORD_TOKEN
+        token = config.discordToken
+        if (!token) {
+          throw new UserError(tokenErrorMessage)
+        }
+      }
+
+      // Get or create a client for this token
+      const client = await discordClientManager.getClient(token)
+
+      // Wait for client to be ready
+      if (!client.isReady()) {
+        await new Promise<void>((resolve) => {
+          const readyListener = () => {
+            resolve()
+            client.removeListener('ready', readyListener)
+          }
+          client.on('ready', readyListener)
+
+          // If client is already ready, resolve immediately
+          if (client.isReady()) {
+            resolve()
+          }
+        })
+      }
+
+      // Register commands to a specific guild or globally
+      let commandCollection: Collection<string, any>
+      if (serverId) {
+        const guild = await client.guilds.fetch(serverId)
+        commandCollection = await guild.commands.set(commands)
+      } else {
+        if (!client.application) {
+          throw new Error('Client application is not available')
+        }
+        commandCollection = await client.application.commands.set(commands)
+      }
+
+      // Set up interaction handlers if not already set up
+      setupSlashCommandInteractionHandlers(client)
+
+      return `Successfully registered ${commandCollection.size} slash commands${serverId ? ` to server ${serverId}` : ' globally'}.`
+    } catch (error) {
+      throw new UserError(`Failed to register commands: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+})
+
+// New tools for message listeners
+server.addTool({
+  name: "create-listener",
+  description: "Create a new message listener with keywords and a predefined response handler",
+  parameters: CreateListenerSchema,
+  execute: async (args) => {
+    try {
+      const { server: serverIdentifier, channel: channelIdentifier, keywords, handlerId, handlerOptions, description } = args
+
+      let { token } = args as z.infer<typeof _CreateListenerSchema>
+      if (!token) {
+        token = config.discordToken
         if (!token) {
           throw new UserError(tokenErrorMessage)
         }
       }
       
-      const commands = await clientManager.registerCommands(token, serverId)
+      // Verify that the handler exists
+      const handler = responseHandlerRegistry.getHandler(handlerId)
+      if (!handler) {
+        throw new UserError(`Response handler with ID "${handlerId}" not found`)
+      }
       
-      return `Successfully registered ${commands.size} slash commands${serverId ? ` to server ${serverId}` : ' globally'}.`
+      // Get client and resolve server/channel IDs if provided
+      const client = await discordClientManager.getClient(token)
+      
+      let serverId: string | undefined
+      let channelId: string | undefined
+      
+      if (serverIdentifier) {
+        const guild = await discordClientManager.findGuild(client, serverIdentifier)
+        serverId = guild.id
+      }
+      
+      if (channelIdentifier && serverId) {
+        const channel = await discordClientManager.findChannel(client, channelIdentifier, serverId)
+        channelId = channel.id
+      }
+      
+      // Create the listener
+      const listenerId = await discordClientManager.addListener(token, {
+        serverId,
+        channelId,
+        keywords,
+        handlerId,
+        handlerOptions,
+        description,
+      })
+      
+      return `Successfully created listener with ID: ${listenerId} using the "${handler.name}" response handler`
     } catch (error) {
-      throw new UserError(`Failed to register commands: ${error instanceof Error ? error.message : String(error)}`)
+      throw new UserError(`Failed to create listener: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  },
+})
+
+server.addTool({
+  name: "remove-listener",
+  description: "Remove an existing message listener",
+  parameters: RemoveListenerSchema,
+  execute: async (args) => {
+    try {
+      const { listenerId } = args
+      
+      const success = discordClientManager.removeListener(listenerId)
+      
+      if (success) {
+        return `Successfully removed listener with ID: ${listenerId}`
+      } else {
+        return `Listener with ID ${listenerId} not found`
+      }
+    } catch (error) {
+      throw new UserError(`Failed to remove listener: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  },
+})
+
+server.addTool({
+  name: "list-listeners",
+  description: "List all active message listeners",
+  parameters: ListListenersSchema,
+  execute: async (args) => {
+    try {
+      let { token } = args as z.infer<typeof _ListListenersSchema>
+      
+      const listeners = discordClientManager.getListeners(token)
+      
+      return JSON.stringify(listeners, null, 2)
+    } catch (error) {
+      throw new UserError(`Failed to list listeners: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  },
+})
+
+server.addTool({
+  name: "list-handlers",
+  description: "List all available response handlers",
+  parameters: ListHandlersSchema,
+  execute: async () => {
+    try {
+      const handlers = responseHandlerRegistry.listHandlers().map(h => ({
+        id: h.id,
+        name: h.name,
+        description: h.description
+      }))
+      
+      return JSON.stringify(handlers, null, 2)
+    } catch (error) {
+      throw new UserError(`Failed to list handlers: ${error instanceof Error ? error.message : String(error)}`)
     }
   },
 })
 
 // Set up connection event handling
 server.on("connect", (event) => {
-  console.error("Client connected")
+  logger.info("Client connected")
 })
 
 server.on("disconnect", (event) => {
-  console.error("Client disconnected")
+  logger.info("Client disconnected")
+  
+  // Clean up resources
+  discordClientManager.destroyAll()
 })
 
 // Set up cleanup on exit
+const cleanup = () => {
+  logger.info("Cleaning up resources...")
+  discordClientManager.destroyAll()
+}
+
 process.on('SIGINT', () => {
-  clientManager.destroyAll()
+  cleanup()
   process.exit(0)
 })
 
 process.on('SIGTERM', () => {
-  clientManager.destroyAll()
+  cleanup()
   process.exit(0)
+})
+
+// Handle uncaught exceptions and unhandled promise rejections
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught exception:', error instanceof Error ? error.message : String(error))
+  cleanup()
+  process.exit(1)
+})
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled promise rejection:', reason instanceof Error ? reason.message : String(reason))
+  cleanup()
+  process.exit(1)
+})
+
+// Handle normal process exit
+process.on('exit', () => {
+  logger.info('Process exiting, cleaning up...')
+  cleanup()
 })
 
 // Start the server using FastMCP's start method
@@ -652,4 +372,4 @@ server.start({
   transportType: "stdio",
 })
 
-console.error("Discord MCP Server running on stdio")
+logger.info("Discord MCP Server running on stdio")
