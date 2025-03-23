@@ -1,6 +1,6 @@
 {
   "name": "@missionsquad/mcp-discord",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Discord MCP server for integrating Discord with LLMs",
   "type": "module",
   "main": "dist/index.js",
@@ -23,9 +23,9 @@
   "license": "MIT",
   "dependencies": {
     "@missionsquad/common": "^1.0.2",
+    "@missionsquad/fastmcp": "^1.0.0",
     "discord.js": "^14.14.1",
     "dotenv": "^16.4.7",
-    "fastmcp": "^1.20.5",
     "uuid": "^11.1.0",
     "zod": "^3.22.4"
   },

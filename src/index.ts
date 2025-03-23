@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { FastMCP, UserError } from "fastmcp"
+import { FastMCP, UserError } from "@missionsquad/fastmcp"
 import { 
   Client, 
   TextChannel, 
@@ -28,26 +28,14 @@ const SendMessageSchema = z.object({
   message: z.string(),
 })
 
-const _SendMessageSchema = SendMessageSchema.extend({
-  token: z.string().optional().describe('Discord bot token'),
-})
-
 const ReadMessagesSchema = z.object({
   server: z.string().optional().describe('Server name or ID (optional if bot is only in one server)'),
   channel: z.string().describe('Channel name (e.g., "general") or ID'),
   limit: z.number().min(1).max(100).default(50),
 })
 
-const _ReadMessagesSchema = ReadMessagesSchema.extend({
-  token: z.string().optional().describe('Discord bot token'),
-})
-
 const RegisterCommandsSchema = z.object({
   server: z.string().optional().describe('Server ID to register commands to (optional, if not provided commands will be registered globally)'),
-})
-
-const _RegisterCommandsSchema = RegisterCommandsSchema.extend({
-  token: z.string().optional().describe('Discord bot token'),
 })
 
 const CreateListenerSchema = z.object({
@@ -59,21 +47,17 @@ const CreateListenerSchema = z.object({
   description: z.string().optional().describe('Description of this listener'),
 })
 
-const _CreateListenerSchema = CreateListenerSchema.extend({
-  token: z.string().optional().describe('Discord bot token'),
-})
-
 const RemoveListenerSchema = z.object({
   listenerId: z.string().describe('ID of the listener to remove'),
 })
 
 const ListListenersSchema = z.object({})
 
-const _ListListenersSchema = ListListenersSchema.extend({
-  token: z.string().optional().describe('Discord bot token'),
-})
-
 const ListHandlersSchema = z.object({})
+
+type ExtraTokenArgs = {
+  token?: string
+}
 
 // Create FastMCP server instance
 const server = new FastMCP({
@@ -86,11 +70,11 @@ server.addTool({
   name: "send_message",
   description: "Send a message to a Discord channel",
   parameters: SendMessageSchema,
-  execute: async (args) => {
+  execute: async (args, context) => {
     try {
       const { server: serverIdentifier, channel: channelIdentifier, message } = args
 
-      let { token } = args as z.infer<typeof _SendMessageSchema>
+      let { token } = context.extraArgs as ExtraTokenArgs || {}
       if (!token) {
         token = config.discordToken
         if (!token) {
@@ -116,11 +100,11 @@ server.addTool({
   name: "read_messages",
   description: "Read recent messages from a Discord channel",
   parameters: ReadMessagesSchema,
-  execute: async (args) => {
+  execute: async (args, context) => {
     try {
       const { server: serverIdentifier, channel: channelIdentifier, limit } = args
 
-      let { token } = args as z.infer<typeof _ReadMessagesSchema>
+      let { token } = context.extraArgs as ExtraTokenArgs || {}
       if (!token) {
         token = config.discordToken
         if (!token) {
@@ -154,11 +138,11 @@ server.addTool({
   name: "register_commands",
   description: "Register slash commands for a Discord bot",
   parameters: RegisterCommandsSchema,
-  execute: async (args) => {
+  execute: async (args, context) => {
     try {
       const { server: serverId } = args
 
-      let { token } = args as z.infer<typeof _RegisterCommandsSchema>
+      let { token } = context.extraArgs as ExtraTokenArgs || {}
       if (!token) {
         token = config.discordToken
         if (!token) {
@@ -212,11 +196,11 @@ server.addTool({
   name: "create_listener",
   description: "Create a new message listener with keywords and a predefined response handler",
   parameters: CreateListenerSchema,
-  execute: async (args) => {
+  execute: async (args, context) => {
     try {
       const { server: serverIdentifier, channel: channelIdentifier, keywords, handlerId, handlerOptions, description } = args
 
-      let { token } = args as z.infer<typeof _CreateListenerSchema>
+      let { token } = context.extraArgs as ExtraTokenArgs || {}
       if (!token) {
         token = config.discordToken
         if (!token) {
@@ -288,9 +272,9 @@ server.addTool({
   name: "list_listeners",
   description: "List all active message listeners",
   parameters: ListListenersSchema,
-  execute: async (args) => {
+  execute: async (args, context) => {
     try {
-      let { token } = args as z.infer<typeof _ListListenersSchema>
+      let { token } = context.extraArgs as ExtraTokenArgs || {}
       
       const listeners = discordClientManager.getListeners(token)
       

@@ -1,6 +1,7 @@
 # Dependencies
 node_modules/
 .env
+.npmrc
 
 # Build output
 build/

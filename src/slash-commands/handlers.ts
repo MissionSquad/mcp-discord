@@ -6,7 +6,7 @@ import {
   Interaction,
   PermissionFlagsBits
 } from 'discord.js'
-import { UserError } from 'fastmcp'
+import { UserError } from '@missionsquad/fastmcp'
 import { z } from 'zod'
 import { tokenErrorMessage } from '../shared.js'
 import { commands } from './commands.js'
